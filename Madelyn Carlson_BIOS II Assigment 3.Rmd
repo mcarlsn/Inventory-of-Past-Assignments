@@ -1,0 +1,736 @@
+---
+title: "BIOS II, Assignment 3"
+author: "Madelyn Carlson"
+date: "November 21, 2021" 
+institute: "CUNY SPH Biostatistics II"
+clean: false
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+    theme: lumen
+    number_sections: yes
+  md_document:
+    preserve_yaml: false
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(readxl)
+library(dplyr)
+library(table1)
+library(expss)
+library(forcats)
+library(survival)
+library(survminer)
+library(gtsummary)
+library(stargazer)
+library(dagitty)
+```
+
+# Introduction 
+
+The dataset used accompanies this publication: Grossberg, A., Mohamed, A., Elhalawani, H. et al. Imaging and clinical data archive for head and neck squamous cell carcinoma patients treated with radiotherapy. Sci Data 5, 180173 (2018). [https://doi.org/10.1038/sdata.2018.173](https://doi.org/10.1038/sdata.2018.173).
+
+**Dataset**: [Patient and Treatment Characteristics.xlsx](https://doi.org/10.7937/K9/TCIA.2017.umz8dv6s)
+
+
+Head and neck cancers account for more than 350,000 cases annually worldwide. As stated by Grossberg and Elhalawani, outcomes for patients with head and neck squamous cell carcinoma (HNSCC) have changed over the last twenty years, which reflects the evolving patterns of four key risk factors: tobacco, HPV, Epstein-Barr virus, and alcohol consumption. The purpose of my analysis is to focus on one of those risk factors: tobacco and explore the relationship between patients who smoked/currently smoke and their overall survival. To conduct this analysis, I used data from the University of Texas MD HNSCC Collection Dataset. Some background information on the dataset: researchers developed it by screening records from 2840 consecutive patients with HNSCC treated at The University of Texas MD Anderson Cancer Center between October 1, 2003, to August 31, 2013. The resulting collection included data on a total of 215 patients. Based on research from Grossberg and Elhalawani and others, I hypothesize that current smokers and former smokers will have increased hazards of death (HR > 1) compared to people who never smoked, controlling for stage, age, sex, and HPV status. 
+
+- H0: Hazard ratio is equal to 1. 
+- H1: Hazard ratio is greater than 1. 
+
+My methodology for this analysis is to first explore the study variables and research their associations, or lack thereof, with my main exposure variables (smoking history and current smoker) and the outcome variable (overall survival). I will use that research to draw a DAG that represents the hypothesized relationships between all study variables. The DAG will inform the variables included in my univariate and multivariate Cox Proportional Hazards regression models. Additionally, I will create Kaplan-Meier plots for the main exposure variables and the 4 hypothesized confounders: age, sex, HPV, and stage. Lastly, I will create diagnostic plots (both log-minus-log and Schoenfeld Residuals) to test the proportional hazards assumption. Note: This analysis is programmed using R (version 4.1.1) in the RStudio environment (version 1.4.1717).
+
+
+
+### Import the Dataset
+
+```{r}
+original_data <- read_excel("Patient and Treatment Characteristics.xls")
+```
+
+
+**Explore the study variables** 
+
+I created a subset of the original dataset that consists only of the study variables. To do this, I used the ```dplyr::select``` function and assigned those chosen variables to an object called "mydata". 
+
+```{r}
+mydata <- select(original_data, "Sex", "Age", "Diag", "Grade", "Stage", "Survival  (months)", "Alive or Dead", "Smoking History", "Current Smoker", "BMI start treat (kg/m2)", "HPV status")
+```
+
+```{r}
+head(mydata)
+```
+
+```{r}
+summary(mydata$Age)
+hist(mydata$Age)
+```
+
+First, I re coded the continuous age variable into 10-year interval groups. I used the ```summary()``` and ```hist()``` commands to see the distribution of age in this study population and determined which groups had too few participants in them. The ```summary()``` function tells us that the minimum age within this study population is 24-years-old and the maximum age is 91-years-old. The ```hist()``` function shows that the youngest and oldest age group have few participants in them. For this reason, the age range 19-29 was lumped with the 30-39 group and the 70-79 group was combined with the 80-89 and 90-99 group. Thus, the age groups used in this analysis include: 39 and younger, 40-49, 50-59, 60-69, and 70 and older. 
+
+
+Other variables included in this analysis are: birth sex, stage, diagnosis, grade, smoking history, current smoker, BMI start treat, alive or dead, and survival (months). For each variable, I explored the levels and the distribution of participants between those levels using the ```table``` and ```summary``` commands. I hid the output of the resulting code (below) because of it's length using ```results = "hide"```. 
+
+```{r results="hide"}
+table(mydata$Sex, useNA = "ifany")
+table(mydata$Stage, useNA = "ifany")
+table(mydata$Diag, useNA = "ifany")
+table(mydata$Grade, useNA = "ifany")
+table(mydata$`Current Smoker`, useNA = "ifany")
+table(mydata$`Smoking History`, useNA = "ifany")
+table(mydata$`HPV status`, useNA = "ifany")
+summary(mydata$`BMI start treat (kg/m2)`)
+table(mydata$`Alive or Dead`, useNA = "ifany")
+summary(mydata$`Survival  (months)`)
+```
+
+
+### Study Variables 
+
+(1) *Time* — Overall survival in months from diagnosis to death or last contact date, if still alive. In the original dataset, this variable is titled "Survival  (months)" but was renamed in my analysis as "time". Time is a numeric variable. 
+
+
+(2) *Cens* — Binary indicator of vital status at last contact date. In the original dataset, this variable was called "Alive or Dead" but I renamed it to "cens" for the sake of simplicity. This is a character variable.  
+
+
+(3) *Smoking History* — Smoking history is coded as “never smoker” (0), “less than 10 pack-years” (1), or “greater than or equal to 10 pack-years” (2) - it is one of the two main exposure variables in this analysis. Additionally, it is a factor variable. 
+
+
+(4) *Current Smoker* — Current smoking status was coded as “no” (0) or “yes” (1). This variable is the second of my two main exposure variables and in my analysis, it is a factor variable. 
+
+
+(5) *HPV Status* — HPV status was assessed in patients using in situ hybridization for high risk HPV sub types. Important to note: HPV is mostly unmeasured in this dataset. This variable has two levels: No HPV and HPV. 
+
+
+(6) *BMI Start* — Patient BMI at the start of radiotherapy. For this analysis, BMI was turned into a factor variable with four levels: underweight (<18.5 BMI), normal weight (18.5-24.9 BMI), overweight (25-30 BMI), and obese (>30 BMI). 
+
+
+(7) *Birth Sex* — Birth sex includes males and females, with females set as the reference category in my analysis. Important note: Birth sex does not necessary align with each patient's gender. 
+
+
+(8) *Age Group* — As previously discussed, the original continuous age variable was re coded into 10-year interval groups. Groups with too few participants in them were lumped together with another age group. The age groups used in this analysis are: 39 and younger, 40-49, 50-59, 60-69, and 70 and older. This is a factor variable. 
+
+
+(9) *Stage* — Staging for all cancers was assigned according to the 7th edition of the AJCC Staging Manual using the TNM system. Stages range from I, II, III, to IV. In the original data set, two distinct stages: IVA and IVB were combined to form one stage, labelled "IV". As a rule, the lower the stage #, the less the cancer has spread. A higher number, such as stage IV, means cancer has spread more. And within a stage (e.g., IVA and IVB), earlier letters means a lower stage. Note: Researchers Grossberg et al. excluded patients who had Stage IVC cancer. Those were patients with distant metastases at the time of diagnosis from the dataset.
+
+
+(10) *Diag* — The diagnosis variable is associated with 19 distinct cancer diagnoses. According to the [Cleveland Clinic](https://my.clevelandclinic.org/health/diseases/12181-hypopharyngeal-cancer), tobacco and alcohol are two main risk factors for most of the cancers listed below. In fact, smokers are five times more likely to develop tongue cancer than nonsmokers. Along with smoking and alcohol, HPV is another common risk factor. Types of cancer included in this analysis: 
+
+
+- CA alveolar ridge: The alveolar ridge is a small protuberance just behind the upper front teeth. Due to its location, this type of cancer is categorized as oral cancer. 
+- CA BOT: Base of tongue cancer. This cancer develops in the base of tongue and is a type of head and neck cancer. 
+- CA hypopharynx: A rare form of throat cancer that affects the bottom part of the throat, called the hypopharynx. Healthcare providers also call this a head and neck cancer. 
+- CA larynx: One type of throat cancer that affects the larynx (voice box). 
+- CA oral tongue: This is one type of tongue cancer. The front two-thirds of the tongue that you can stick out is called the oral tongue. This cancer is more common in older age groups and other risk factors include smoking and drinking alcohol. 
+- CA posteriot pharyngeal wall: One type of neck cancer. Posterior pharyngeal wall (PPW) carcinomas are rare, comprising only around 7% of all hypopharyngeal malignancies
+- CA soft palate: Is a type of throat cancer. The soft palate is located on the upper portion of the back of your mouth, behind your teeth.
+- CA supraglottic: This is one of the throat cancers. Two common risk factors for supraglottic cancer are alcohol and smoking. 
+- CA tonsil: One type of throat cancer. Factors that increase risk of tonsil cancer include tobacco, alcohol, and being infected with HPV. 
+- NPC: A rare tumor of the head and neck that originates in the nasopharynx. 
+- Recurrence CA retromolar trigone: A relatively rare oral cancer in which reoccurance is common. The recurrence rate in patients with T1 stage laryngeal cancer varies from 5 to 13% and patients with T3 and T4 stage disease, the recurrence rate is 30–50%. 
+- CA buccal mucosa: Buccal mucosa is another name for the inside lining of the cheeks. This is a type of head and neck cancer. 
+- CA glossopharyngeal sulcus: This is cancer located at the tongue base. 
+- CA maxillary sinus: A type of cancer that occurs in the sinuses. Smoking and histories of chronic sinusitis are the most common risk factors for maxillary sinus cancer.
+- CA oropharynx: Cancer in the middle part of your throat. 
+- CA pharyngeal: This includes cancer of the nasopharynx (the upper part of the throat behind the nose), the oropharynx (the middle part of the pharynx), and the hypopharynx (the bottom part of the pharynx). Cancer of the larynx (voice box) may also be included as a type of pharyngeal cancer.
+- CA pyriform sinus: A type of cancer that occurs in the sinuses.
+- CA retromolar trigone: A relatively rare subsite for oral cancer. 
+- CUP: Cancer of unknown primary (CUP) is when cancer cells are found in the body but the place the cancer began is not known. This means it is a secondary cancer that has spread to a new place from an unknown primary cancer somewhere else in the body.
+
+
+
+# DAG
+
+*This DAG displays the hypothesized relationship between smoking and overall survival from HNSCC.* 
+
+I tried to load my DAG using the R code dagitty.com provided but every time I ran the code, my RStudio session crashed. This happened when I used R in Terra too. I tried updating my RStudio session and rerunning the code but the same thing happened. Every time, the warning message reads "R Session Aborted. R encountered a fatal error. The session was terminated." I saw in Slack #r-help that another student had the same issue and when they updated R, the issue fixed itself. The same was not true for me and I wonder why... As an alternative, I added a screenshot of the DAG I created in Dagitty.com.
+
+![Screenshot of DAG from dagitty.com](/Users/madelyncarlson/Desktop/BIOSLab2/cunybios2/Carlson BIOS Assignments/DAG.png)
+
+*Below is R code provided by dagitty.com that I could not run successfully. It is pasted here as a reference.*
+
+library(dagitty)
+my_dag <- dagitty('dag {
+bb="0,0,1,1"
+"BMI (start)" [pos="0.626,0.177"]
+"Birth Sex" [pos="0.226,0.748"]
+"Cancer Diagnosis" [pos="0.410,0.370"]
+"Current Smoking" [exposure,pos="0.088,0.300"]
+"HPV Status" [pos="0.696,0.741"]
+"Overall Survival" [outcome,pos="0.890,0.401"]
+"Smoking History" [exposure,pos="0.096,0.488"]
+"Stage of Cancer" [pos="0.433,0.173"]
+Age [pos="0.440,0.753"]
+Grade [pos="0.224,0.193"]
+"BMI (start)" -> "Cancer Diagnosis"
+"BMI (start)" -> "Overall Survival"
+"Birth Sex" -> "Cancer Diagnosis"
+"Birth Sex" -> "Current Smoking"
+"Birth Sex" -> "Overall Survival"
+"Birth Sex" -> "Smoking History"
+"Cancer Diagnosis" -> "Overall Survival"
+"Cancer Diagnosis" -> "Stage of Cancer"
+"Cancer Diagnosis" -> Grade
+"Current Smoking" -> "Cancer Diagnosis"
+"Current Smoking" -> "Overall Survival"
+"HPV Status" -> "Cancer Diagnosis"
+"HPV Status" -> "Overall Survival"
+"Smoking History" -> "Cancer Diagnosis"
+"Smoking History" -> "Current Smoking"
+"Smoking History" -> "Overall Survival"
+Age -> "Cancer Diagnosis"
+Age -> "Current Smoking"
+Age -> "HPV Status"
+Age -> "Overall Survival"
+Age -> "Smoking History"
+}
+')
+
+plot(my_dag)
+
+
+*Discussion of DAG* 
+
+The DAG displays the main exposure variables: current smoker and smoking history and the outcome variable overall survival. Current smoker is associated with stage, diagnosis, and overall survival. Smoking history is associated with current smoker, stage, diagnosis, and overall survival. Age is associated with smoking history, current smoker, diagnosis, HPV status, and overall survival. In other words, age group has a direct effect on both the outcome and exposure variables - as such, it is one of the hypothesized confounders. I estimate that assigning age as a confounder will not lead to an underestimation of the effect of smoking on overall survival because it does not have a strong effect on the outcome, nor is the effect stronger than that of smoking on overall survival. HPV has a negative association with smoking status and smoking history among cancer cases. This is because HPV-caused cancers are more treatable than smoking/alcohol-caused cancers and therefore, HPV is positively associated with survival. HPV-associated cancers also tend to occur in younger patients than smoking-associated cancers. According to this DAG, the minimal sufficient adjustment that's needed to estimate the total effect of smoking on overall survival included age, birth sex, and HPV status. In other words, to estimate the total effect of exposure-outcome, I need to adjust for those three hypothesized confounders in the multivariate model. 
+
+
+**Clean and re level the study variables** 
+
+The mutate function from dplyr was used to recode/ relevel variables, create labels, and set the desired reference groups. The recoded variables are saved into a new dataset (mydata_new) which is used for the rest of this analysis.
+
+```{r}
+mydata_new <- mydata %>% 
+# Age 
+  dplyr::mutate(agegroup1 = case_when(Age >=24 & Age <= 39 ~ 1, 
+                                Age >= 40 & Age <= 49 ~ 2,
+                                Age >= 50 & Age <= 59 ~ 3,
+                                Age >= 60 & Age <= 69 ~ 4,
+                                TRUE ~ 5), 
+                agegroup = recode_factor(agegroup1,
+                               "1" = "39 and younger",
+                               "2" = "40-49",
+                               "3" = "50-59",
+                               "4" = "60-69",
+                               "5" = "70+")) %>%
+# Stage 
+  mutate(Stage = recode_factor(Stage,
+                               "I" = "Stage I",
+                               "II"= "Stage II",
+                               "III"= "Stage III",
+                               "IVA" = "Stage IV",
+                               "IVB" = "Stage IV",
+                               .default = "NA")) %>% 
+#Smoking History 
+  mutate(smoking_history = recode_factor(`Smoking History`,
+                                "0" = "Never Smoker",
+                                "1" = "Fewer than 10 pack-years",
+                                "2" = "10 or more pack-years")) %>%
+#Current Smoker 
+  mutate(current_smoker = recode_factor(`Current Smoker`,
+                                "0" = "Not current smoker",
+                                "1" = "Current smoker")) %>% 
+# HPV
+  mutate(HPV = recode_factor(`HPV status`,
+                                "negative" = "No HPV",
+                                "positive" = "HPV")) %>%
+# BMI 
+  rename(BMI_start = `BMI start treat (kg/m2)`) %>%
+  dplyr::mutate(BMI1 = case_when(BMI_start <18.5 ~ 1, 
+                                     BMI_start >= 18.5 & BMI_start <= 24.9 ~ 2,
+                                     BMI_start >= 25 & BMI_start < 30 ~ 3, 
+                                     TRUE ~ 4),
+                BMI_start = recode_factor(BMI1,
+                                     "2" = "Normal Weight",
+                                     "1" = "Underweight",
+                                     "3" = "Overweight",
+                                     "4" = "Obese")) %>%
+# Grade 
+  mutate(Grade = recode_factor(Grade,
+                               "moderately diff." = "Moderately diff.",
+                               "moderately to poorly diff."= "Moderately to poorly diff.",
+                               "poorly diff."= "Poorly diff.",
+                               "undiff." = "Undiff.",
+                               "well diff." = "Well diff.",
+                               "Well to moderately diff." = "Well to moderately diff.",
+                               .default = "NA")) %>% 
+# time 
+  rename(time = `Survival  (months)`) %>%
+  
+# cens
+  rename(cens = `Alive or Dead`)
+```
+
+
+# EPI Table 1
+
+Label variables that will be shown in EPI Table 1.  
+
+```{r}
+mydata_new <- within(mydata_new, {
+  label(agegroup) <- "Age group (years)"
+  label(Sex) <- "Biological sex"
+  label(Diag) <- "Cancer Diagnosis"
+  label(Grade) <- "Histopathologic Grade"
+  label(Stage) <- "Stage"
+  label(smoking_history) <- "Smoking History"
+  label(current_smoker) <- "Current Smoker"
+  label(HPV) <- "HPV Status"
+  label(BMI_start) <- "BMI"
+  label(cens) <- "Survival"
+})
+```
+
+
+Set up Table 1 
+```{r}
+table1 <- table1::table1(~ agegroup + Sex + Diag + Grade + Stage + smoking_history + current_smoker + BMI_start + HPV| cens, 
+               data = mydata_new, 
+               topclass="Rtable1-zebra", 
+               overall = "Total", 
+               rowlabelhead ="Patient Charateristics", 
+               footnote = "Data Source: Head and Neck Cancer CT Atlas Clinical XLS",
+               render.continuous=c(. = "Median [Min, Max]"),
+               caption = "Table 1: Charateristics of Data from Head and Neck Cancer CT Atlas")
+```
+
+
+Print Table 1. 
+```{r fig.align = "center"}
+table1
+```
+
+
+*Description of EPI Table*
+
+A majority of the patients in this dataset are male (84%) between 50-69 years-old (71.7%). The HPV status variable contains many missing values - only 21.9% of the study population had their HPV status recorded. The stage variable includes 4 levels of stages and most participants in this dataset fall in stage IV. 175 people represent stage IV while only 4 people are in stage I and 5 people are in stage II. The unequal distribution of particiapnts in stages is likely to affect future analyses. The cancer diagnosis variable contains many levels (n = 19), only two of which contain a majority of the participants: CA tonsil is the diagnosis of 31.2% of the sample population and CA BOT is applicable to approximately 37% of patients. All other diagnoses contain 0-3 patients in them, on average. 
+
+
+Next, I assigned the label "Dead" to cens = 1. The cens variable needs to be logical or numeric for the Kaplan-Meier plots to work effectively. This code chunk assigns numeric values 1 and 0 to the cens variable and the label "Dead" to cens = 1 and "Alive" = 0. 
+
+```{r}
+mydata_new$cens <- ifelse(mydata_new$cens == "Dead", 1, 0)
+```
+
+
+# Kaplan-Meier Plots 
+
+First, I plotted a KM curve for all participants using ```library(survminer)``` function ```ggsurvplot.``` This model is unstratified. 
+
+```{r}
+fit_all <- survfit(Surv(time, cens) ~ 1, data = mydata_new)
+
+ggsurvplot(fit_all) 
+```
+
+By default, this plot includes 95% CI on the survival function for all participants. Looking at the curve, it appears that the median survival time for the entire study population is approximately 105 months. To confirm this, I used ```quantile(fit_all)``` and found that at survival probability = 50%, time = 105.87 months. 
+
+
+**Kaplan-Meier Plots Stratified by the Predictor Variables of Interest** 
+
+In this analysis, KM plots examine the survival probability of the study population over 120 months (10 years). The plots shown below are stratified by the predictor variables of interest: smoking history, current smoker, age, and stage. These particular variables were selected because they are expected to cause differences in survival. 
+
+
+```{r include=FALSE}
+with(mydata_new, Surv(time, cens))
+```
+
+
+**Kaplan-Meier plot for the current smoker variable (which is one of the two main exposure variables).** 
+
+```{r}
+km_currentsmoker<-survminer::surv_fit(Surv(time, cens) ~ current_smoker, data = mydata_new)
+
+survminer::ggsurvplot(km_currentsmoker,
+                      pval.method = TRUE,
+                      risk.table = TRUE,
+                      surv.median.line = "hv",
+                      pval = TRUE, 
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("Not current smoker", "Current Smoker"),
+                      title = "Probability of Survival by Current Smoker Status Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_currentsmoker)
+```
+
+
+This plot that shows the estimated survival function for current smokers and not current smokers. Although the two curves are intertwined at the beginning, at approximately 28 months, the current smokers group curve drops away from not current smokers. From that point on, current smokers have less survival probability than the not current smokers. Between 90-120 months, both groups drop somewhat drastically. The median survival time fo current smokers is 86.8 months and for not current smokers, it's 105.9 months. Overall, this KM plot shows that current smokers tend to survive shorter time than not current smokers in this study sample. The p-value is 0.085 and is statistically non significant (at p-value < 0.05). 
+
+
+
+**KM plot for smoking history variable (the second main exposure variable).**
+
+```{r}
+km_smokinghistory <-survminer::surv_fit(Surv(time, cens) ~ smoking_history, data = mydata_new)
+
+survminer::ggsurvplot(km_smokinghistory,
+                      pval.method = TRUE,
+                      risk.table = TRUE,
+                      pval = TRUE, 
+                      surv.median.line = "hv",
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("Never Smoker", "Fewer than 10 pack-years", "More than 10 pack-years"),
+                      title = "Probability of Survival by Smoking History Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_smokinghistory)
+```
+
+For smoking history, those who are never smokers tend to survive longer times than those who smoke > 10 pack-years and people who smoke < 10 pack-years. The median survival time for never smoker is 105.9 months, those who smoke < 10 pack-years have a median survival time of 118.9 months and all individuals who reported smoking > 10 pack-years died/ were censored before the median survival time. Therefore, the median survival time for that group is N/A. Note: This group also had the fewest participants in it, compared to the other two groups. At month 120, no participants (in any group) were still alive. The p-value is 0.53 and is statistically non significant (at p-value < 0.05). 
+
+
+
+**KM plot for birth sex variable.**
+
+```{r}
+km_sex <-survminer::surv_fit(Surv(time, cens) ~ Sex, data = mydata_new)
+
+survminer::ggsurvplot(km_sex,
+                      pval.method = TRUE,
+                      risk.table = TRUE,
+                      pval = TRUE, 
+                      surv.median.line = "hv",
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("Female", "Male"),
+                      title = "Probability of Survival by Birth Sex Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_sex)
+```
+
+Males heavily outnumber females in this dataset (there are 33 females and 182 males). The curves for males and females cross over multiple times, once at approx. 15 months, again at approx. 55 months and maybe a third time at approx. 80 months. Ultimately, the curve for males dips below females and indicates shorter survival times than females. I suspect that the difference between these curves would be more extreme if there were more females represented in this dataset. According to the [Dana Farber Cancer Institute](https://blog.dana-farber.org/insight/2018/10/men-likely-women-develop-cancer-course-lives/), men have about a one in two chance of developing cancer during their lifetime while women have a one in three chance. Another article, "Human papillomavirus as a driver of head and neck cancers" written by Maria Elisa Sabatini & Susanna Chiocca reported a similar finding: men are significantly more likely to develop HNSCC than women with an incidence ratio ranging from 2:1 to 4:1. The p-value is 0.82 and is statistically non significant (at p-value < 0.05). 
+
+
+
+**KM plot for HPV status variable.**
+
+```{r}
+km_hpv <-survminer::surv_fit(Surv(time, cens) ~ HPV, data = mydata_new)
+
+survminer::ggsurvplot(km_hpv,
+                      pval.method = TRUE,
+                      risk.table = TRUE,
+                      pval = TRUE, 
+                      surv.median.line = "hv",
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("No HPV", "HPV"),
+                      title = "Probability of Survival by HPV Status Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_hpv)
+```
+
+HPV is a risk factor for the head and neck squamous cell carcinoma represented in this dataset. Due to its importance as a novel risk factor for these cancers, I added a KM plot for HPV - despite the fact that this variable has many missing values. This plot shows that the "No HPV" curve drops quickly from the "HPV" curve, indicating that people with HPV have longer survival times than those without HPV. This is the opposite of what we'd expect to see.  It's likely that HPV is associated with longer survival times (compared to those without HPV) because HPV-caused cancers are more treatable than smoking/alcohol-caused cancers. Therefore, positive HPV status is positively associated with survival. HPV-associated cancers also tend to occur in younger patients than smoking-associated cancers. Also, there are not enough participants with their HPV status recorded for there to be median survival times for either group. At the 25th quantile, the survival time for "No HPV" group is 20.6 months and it's 75.4 months for HPV group. The p-value is 0.29 and is statistically non significant (at p-value < 0.05). 
+
+
+
+**KM for age group variable.**
+
+```{r}
+km_age<-survminer::surv_fit(Surv(time, cens) ~ agegroup, data = mydata_new)
+
+survminer::ggsurvplot(km_age,
+                      risk.table = TRUE,
+                      pval = TRUE, 
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("39 and younger", "40-49", "50-59", "60-69", "70 and older"),
+                      title = "Probability of Survival by Age Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_age)
+```
+
+Older age is positively correlated with head and neck squamous cell carcinoma. This is evident in the KM plot. Older age groups (60-69 and 70+) have shorter survival times than the younger age groups. The age group 39 and younger display the longest survival times. The three youngest age groups have few participants in them so running ```quantile(km_age)``` we see that those groups do not have 50th or 75th quantiles. Only the two oldest age groups have enough participants to show 50th and 75th quantile. The median survival time for 60-69 year-olds is 86.8 and it's 105.9 for people over 70-years-old. The p-value is 0.12 and is statistically non significant (at p-value < 0.05). 
+
+
+
+**KM for stage variable.**
+
+```{r}
+km_stage<-survminer::surv_fit(Surv(time, cens) ~ Stage, data = mydata_new)
+
+survminer::ggsurvplot(km_stage,
+                      risk.table = TRUE,
+                      pval = TRUE, 
+                      surv.plot.height = 0.65,
+                      risk.table.height = 0.35,
+                      linetype = 1:18,
+                      legend.labs = c("Stage I", "Stage II", "Stage III", "Stage IV"),
+                      title = "Probability of Survival by Stage Estimated by KM Method", 
+                      xlab = "Time (months)",
+                      ylab = "Survival Probability",
+                      font.x=c(12),
+                      font.y=c(12))
+```
+
+```{r}
+quantile(km_stage)
+```
+
+This KM plot shows that people in stage I have the shortest survival times, compared to those with stage II, III, and IV cancer, which is counter intuitive. Stage II, III, and IV cross over multiple times. These curves are more or less intertwined from 0-120 months. Stage I dips below the others quickly. The median survival time for participants in stage I is 30.5 months; stage II is N/A; stage III is 105.9 months, and stage IV is 118.9 months. The p-value for this plot is 0.0037. Of all the plots previously shown, this variable is the only statistically significant one. I suspect that the reason for this counter intuitive finding is the sample sizes for each stage. There are many more people with stage IV cancer than stage I or II. 
+
+
+
+# Univariate Cox Proportional Hazards Regression 
+
+I preformed Cox PH univariate regressions for the predictor variables: current smoker, smoking history, age (both age group and continuous age), HPV, sex, and stage to estimate their crude associations with survival. 
+
+**Current smoker**
+```{r}
+cox_currentsmoker <- coxph(Surv(time, cens) ~ current_smoker, data = mydata_new)
+
+summary(cox_currentsmoker)
+```
+
+*Interpretation*
+
+For patients who identify as a current smoker, the hazard ratio is 1.493, relative to those who are not a smoker i.e., the risk of death is 1.493 times higher in the current smokers group compared to the never smokers. The p-value is 0.0868, which is not statistically significant (at p-value > 0.05) and the 95% CI is  0.9438, 2.361 which includes the null value 1 which indicates that we should accept the null hypothesis of a hazard ratio equal to 1. 
+
+
+**Smoking history**
+```{r}
+cox_smokinghistory <- coxph(Surv(time, cens) ~ smoking_history, data = mydata_new)
+
+summary(cox_smokinghistory)
+```
+
+*Interpretation*
+
+Relative to "never smokers", the risk of death for people who smoke > 10 pack-years is 1.07 higher (p-value = 0.872, 95% CI: 0.4627, 2.482). For people who smoke < 10 pack-years, the risk of death is 1.31 higher than "never smokers" (p-value = 0.278, 95% CI: 0.8029, 2.147). For both levels, the p-value is statistically non significant and the 95% CI include the null value 1, which surprises me because smoking is a risk factor for head and neck squamous cell carcinoma. One possible explanation is that the sample size is relatively small. 
+
+
+**Age groups**
+```{r}
+cox_agegroup <- coxph(Surv(time, cens) ~ agegroup, data = mydata_new)
+
+summary(cox_agegroup)
+```
+
+*Interpretation*
+
+Compared to people who are 39-years-old and younger, patients between 40-49 years old have 2.7883 times the risk of death (p-value = 0.331, 95% CI: 0.3521, 22.08). Risk of death is 2.5151 times higher among those between 50-59 years old compared to the youngest age group (p-value = 0.366, 95% CI: 0.3405, 18.58); it's 4.4274 times higher among people who are 60-69 years old (p-value = 0.144, 95% CI: 0.6030, 32.51) and 4.3723 times higher among those over 70-years-old compared to the youngest age group (p-value = 0.160, 95% CI: 0.5588, 34.21). The hazards ratio increases with age, as I expected it would, but none of the age groups are statistically significant, which isn't what I expected when I drew the DAG. Also, note that the 95% confidence intervals are extremely wide, especially the one for people over 70-years-old. 
+
+
+**HPV status**
+```{r}
+cox_hpv <- coxph(Surv(time, cens) ~ HPV, data = mydata_new)
+
+summary(cox_hpv)
+```
+
+*Interpretation*
+
+Testing HPV positive is associated with exp(coef) = 0.5413. Hazard ratios less than 1 indicate that the predictor is protective (associated with improved survival) meaning that for people with HPV, the risk of death is reduced by 46% compared to people without HPV in this sample population. It's likely that HPV is associated with improved survival (compared to those without HPV) because HPV-caused cancers are more treatable than smoking/alcohol-caused cancers. Therefore, positive HPV status is positively associated with survival. HPV-associated cancers also tend to occur in younger patients than smoking-associated cancers. The p-value is 0.297 which is statistically non significant and the 95% CI is 0.1706, 1.717 which includes the null value of 1. 
+
+
+**Birth sex**
+```{r}
+cox_sex <- coxph(Surv(time, cens) ~ Sex, data = mydata_new)
+
+summary(cox_sex)
+```
+
+*Interpretation*
+
+The risk of death among males is 1.075 higher than it is among females (Note: this variable includes participant's birth sex, not necessarily their gender). This HR is aligned with prior research, which states that males significantly more likely to develop HNSCC than females with an incidence ratio ranging from 2:1 to 4:1. The p-value = 0.825 is statistically non significant and the 95% CI is 0.5669, 2.039 which includes the null value 1. 
+
+
+**Stage**
+```{r}
+cox_stage <- coxph(Surv(time, cens) ~ Stage, data = mydata_new)
+
+summary(cox_stage)
+```
+
+*Interpretation*
+
+The reference group for the stage variable is stage I. Compared to patients with stage I cancer, all other stages are associated with HR > 1, which indicates that stage II, III, and IV are protective (associated with improved survival). More specifically, for stage II, the risk of death is reduced by 83% compared to stage I; for stage III, risk of death is reduced by 79.48%; for stage IV, risk of death is reduced by 82%. The p-values for stage II (0.04247), III (0.00698), and IV (0.00112) are all statistically significant at p-value > 0.05. See the output for 95% CI per stage level. 
+
+
+**Display results from univariate models in one table** 
+
+```{r, results='asis', message=FALSE}
+library(stargazer)
+stargazer(cox_currentsmoker, cox_smokinghistory, cox_agegroup, cox_hpv, cox_sex, cox_stage, type = "html", title = "Results from Univariate Cox Proportional Hazards Regression")
+```
+
+
+# Multivariate Cox Proportional Hazards Model 
+
+
+I preformed two multivariate regressions, one for the current smoker variable and another for the smoking history variable, to estimate the total effect of smoking on survival. There are three covariates included in each these models that are justified by the DAG: age group, birth sex, and stage. Although HPV is a hypothesized confounder (as demonstrated in the DAG), I decided not to add it to these models because HPS is largely unmeasured in this dataset. Interpretations of both models will be in the results section, below. 
+
+
+**The first multivariate model uses the current smoker variable** 
+
+```{r}
+multi_fit <- coxph(Surv(time, cens) ~  current_smoker + agegroup + Sex + Stage, data = mydata_new)
+
+summary(multi_fit)
+```
+
+
+
+**This model uses the smoking history variable** 
+
+```{r}
+multi_fit2 <- coxph(Surv(time, cens) ~ smoking_history + agegroup + Sex + Stage, data = mydata_new)
+
+summary(multi_fit2)
+```
+
+
+# Results 
+
+
+I displayed results from the two multivariate models using ```tbl_regression()```.
+
+```{r}
+tbl_regression(multi_fit, exponentiate = TRUE)
+```
+
+*Interpretation* 
+
+Multivariate model no. 1 includes the current smoker exposure variable. In it, the risk of death among those who are current smokers is 1.43 times higher than those who are not current smokers (p-value = 0.16 is non significant and the 95% CI: 0.86800, 2.3525) includes the null value 1. Of all the covariates, stage is the only variable that shows statistical significance (at p-value < 0.05). Compared to the univariate model results, the hazard ratios for age group, stage, and birth sex are similar, but not identical to those results - which is as expected. Here, the HR for age groups  60-69 years old and 70+ years old are slightly lower than they were in the univariate model. The HR for males is slightly closer to the null value in this model compared to the univariate model. 
+
+
+```{r}
+tbl_regression(multi_fit2, exponentiate = TRUE)
+```
+
+*Interpretation* 
+
+Multivariate model no. 2 includes the smoking history exposure variable. In it, the exp(coef) among those who smoked < 10 pack-years compared to those who never smoked is 1, which is the HR null value. The HR for those who smoked > 10 pack-years is only slightly farther from the null: exp(coef) = 1.0581. Neither values are statistically significant. Like the first model, the stage variable shows statistical significance here. Unlike the first model, only two stage levels are significant: stage III and IV. Both models suggest that as stage levels increase (from I to II etc.) survival is longer - this not make sense. Rather than reflecting the reality of the situation, I believe it highlights one of the limitations of this analysis: that it is dependent on a small sample size (n = 215). 
+
+
+
+# Diagnostic Plots 
+
+I used two sets of diagnostic plots: log-minus-log and Schoenfeld residuals to test two key assumptions of Cox HR: proportional hazards and log-linearity. 
+
+
+**Log-Minus-Log Plots** 
+
+The proportional hazards assumption is one key assumption of the Cox Proportional Hazards model. According to the proportional hazards assumption, the hazard may change but the hazard ratio between group should not vary over time i.e., 𝐻𝑅(𝑡)≡𝐻𝑅. Log-minus-log plots can assess whether the proportional hazards assumption was violated in my analysis. I applied log-minus-log plots to both main exposure variables: current smoker and smoking history. 
+
+
+*Current Smoker*
+```{r}
+logfit1 <- survfit(Surv(time, cens) ~ current_smoker, data = mydata_new)
+
+plot_logfit1 <- ggsurvplot(logfit1, fun = "cloglog",
+                legend.labs = c("Not current smoker", "Current smoker"),
+                title = "Log-minus-log Plot for Current Smoker", 
+                xlab = "Time (months)",
+                ylab = "log(-log(S(t)))",
+                font.x=c(12),
+                font.y=c(12))
+               
+plot_logfit1
+```
+
+*Interpretation* 
+
+In this plot, the curves for current smokers and not current smokers are fairly parallel. Although the curves do cross over near the bottom, that convergence doesn’t necessarily indicate a violation of proportional hazards. Note: Converging curves suggest that the difference between the groups decreases with time. 
+
+
+
+*Smoking History*
+```{r}
+logfit2 <- survfit(Surv(time, cens) ~ smoking_history, data = mydata_new)
+
+plot_logfit2 <- ggsurvplot(logfit2, fun = "cloglog",
+                legend.labs = c("Never Smoker", "Fewer than 10 pack-years", "More than 10 pack-years"),
+                title = "Log-minus-log Plot for Smoking History", 
+                xlab = "Time (months)",
+                ylab = "log(-log(S(t)))",
+                font.x=c(12),
+                font.y=c(12))
+               
+plot_logfit2
+```
+
+*Interpretation* 
+
+Again there is some crossover that occurs at the beginning, which could indicate non proportionality. In addition, there are slight differences between the curves. Despite these differences, I believe that that they are approximately parallel to each other. Due to other displays of no systematic variation over time, I posit that the proportional hazards assumption in the smoking history and current smoker plots was ultimately met.
+
+
+**Plot the Schoenfeld Residuals and Perform Schoenfeld test for the above Cox model**
+
+The Schoenfeld residuals test was used to assess the correlation between scaled Schoenfeld residuals and time. If Schoenfeld residuals plot displayed a random pattern then there was no time-based pattern and the assumption holds. If there is a systematic pattern then that is a time-based pattern and it means that the assumption did not hold. 
+
+
+*Current Smoker*
+```{r}
+stest_currentsmokers <- cox.zph(cox_currentsmoker)
+plot(stest_currentsmokers)
+```
+
+```{r}
+stest_currentsmokers
+```
+
+
+*Smoking History*
+```{r}
+stest_smokinghistory <- cox.zph(cox_smokinghistory)
+plot(stest_smokinghistory)
+```
+
+```{r}
+stest_smokinghistory
+```
+
+*Interpretation of plots* 
+
+In these two plots, there are lines of residuals above and below the curves. You can distinguish the binary variable (current smoker) with the three level variable (smoking history) by noticing the numbers of lines of residuals - the second plot has three lines of residuals. In neither of these plots do we see a trend in the Schoenfeld residuals, which indicates no violation of proportional hazards. To confirm this, I performed the Schoenfeld test. The corresponding p-values for both current smoker and smoking history are statistically non significant. Therefore, there is no  no evidence of a trend in the time variation of the coefficients for either current smoker or smoking history. 
+
+
+# Conclusion 
+
+In conclusion, I failed to reject the null hypothesis. The hazards of mortality for current smokers compared to someone who is not a current smoker is statistically non significant in both the univariate and multivariate models. The same is true for the smoking history exposure. Stage of diagnosis was the only significant variable and it was as such in both in the univariate and multivariate models. Counter intuitively, there were decreased hazards of mortality for people at stage II, III, and IV compared to stage I cancer. Clearly, this finding reveals limitations in my analysis. I identified three limitations in my analysis: 
+
+* The sample size was small (n = 215). I think that the sample size is why the stage variable had those counter intuitive results. Additionally, I know from research that smoking is one of the key risk factors for each of the 19 cancer diagnosis in this dataset and if the sample size had been larger, I suspect that current smoker and smoking history would have shown statistical significance. 
+* Other key risk factors include drinking alcohol and being HPV positive. Thus, the second and third limitations were that HPV was removed from the multivariate model due to many missing values (HPV was mostly unmeasured in this dataset). Also, there were no measures in this dataset that captured information on patients’ prior alcohol consumption. If there had been more information on these two risk factors, the results and conclusions would likely have been different. 
+
