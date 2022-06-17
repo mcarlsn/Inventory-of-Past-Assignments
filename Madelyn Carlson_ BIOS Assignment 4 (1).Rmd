@@ -1,0 +1,425 @@
+---
+title: "BIOS II, Assignment 4: Longitudinal and Multilevel Modeling"
+author: "Madelyn Carlson"
+institute: "CUNY SPH Biostatistics II"
+clean: false
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+    theme: lumen
+    number_sections: yes
+  md_document:
+    preserve_yaml: false
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(nlme)
+library(sjPlot)
+```
+
+# Introduction 
+
+The dataset used in this analysis accompanies the publication: Moen EL, Fricano-Kugler CJ, Luikart BW, O’Malley AJ (2016) Analyzing Clustered Data: Why and How to Account for Multiple Observations Nested within a Study Participant? PLoS ONE 11(1): e0146721. [https://doi.org/10.1371/journal.pone.0146721](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0146721) And the data was downloaded from [Github Clustered Data Code](https://github.com/elmoen/clustered_data_code). 
+
+
+Publication background: In "Analyzing Clustered Data: Why and How to Account for Multiple Observations Nested within a Study Participant?" Moen et al. preform analyses on clustered data to demonstrate differences between marginal, fixed-effect, and mixed-effect model and provide guidelines for when each of these models is most appropriate based on study design. The hierarchical data used in Moen et al. publication and in my assignment consists of 1,142 observations taken from 13 mice (approx. 88 neurons were measured in each mouse). Mice received a variety of treatments: fatty acid delivery, vehicle control, and no treatment and then the soma size of ~88 neurons were measured per mouse. In my assignment, I replicated Moen et al. analysis and ran 5 regression models to examine the association of Pten on soma size in mice that received no treatment then compared those results to Moen et al. publication. Based on Moen et al. findings, my hypothesis is that Pten knockdown will lead to an increase in soma size among mice who weren't exposed to fatty acid or vehicle control. This analysis is programmed using R (version 4.1.1) in the RStudio environment (version 1.4.1717).
+
+
+
+### Study Variables 
+
+(1) *MouseID* — Factor specifying mouse identity for each neuron.
+
+(2) *Fatty Acid Treatment* — Labelled as "fa" in original data set. 0 = no treatment (reference group), 1 = fatty acid treatment, and 2 = vehicle control. 
+
+(3) *PTen Knockdown* — Labelled as "pten" in data set, 0 = control and 1 = pten ShRNA.
+
+(4) *Somasize* — Continuous variable of soma size for each neuron measured in micrometers. 
+
+(5) *Prop* — Proportion of cells with PTen knockdown per mouse. 
+
+(6) *Meanss_pten* — Mean soma size for pten. 
+
+(7) *Meanss_all* — Mean soma size for all neurons. 
+
+(8) *Numctrl* — Number of neuron measurements per mouse. 
+
+(9) *Numpt* — Number of neuron measurements per mouse (pten). 
+
+
+### Import the Dataset
+
+```{r}
+PtenAnalysisData <- read_csv("~/Desktop/BIOSLab2/cunybios2/Carlson BIOS Assignments/PtenAnalysisData.csv")
+```
+
+```{r}
+head(PtenAnalysisData)
+```
+
+
+**Exploring the study variables** 
+
+The variables included in this analysis are: fa, pten, somasize, numctrl, numpten, prop, meanss_pten, and meanss_all.  For each variable, I explored the levels and the distribution of mice between those levels using the ```table``` and ```summary``` commands. I hid the output of the resulting code (below) because of it's length using ```results = "hide"```. 
+
+```{r results="hide"}
+table(PtenAnalysisData$fa)
+table(PtenAnalysisData$pten)
+table(PtenAnalysisData$numctrl)
+table(PtenAnalysisData$numpten) 
+summary(PtenAnalysisData$meanss_all)
+hist(PtenAnalysisData$somasize)
+```
+
+
+**Prepare the Data**
+
+
+In my analysis, I restricted the mice sample to only mice with fa==0 because in the paper, Moen et al. look at mice with no environmental treatment. I will use this subset of mice in all subsequent analyses and plots.  
+
+```{r}
+mydata <- PtenAnalysisData %>% 
+          filter(fa==0) %>%
+          mutate(mouseid = factor(mouseid))%>%
+          mutate(pten = factor(pten))
+```
+
+
+# Box Plot of Soma Size Per Mouse
+
+In this box plot, I have included individual data points using the ```jitter``` function. I've also specified notch=TRUE and varwidth = TRUE. 
+
+```{r gaboxplot, fig.cap="Figure 1: Soma Size Per Mouse 0-4, Data Source: PtenAnalysisData.csv"}
+ggplot(mydata, aes(x = mouseid, y=somasize, group = mouseid)) + 
+  geom_boxplot(outlier.shape = NA, notch=TRUE, varwidth = TRUE) +
+  geom_jitter(width=0.2, alpha = 0.25) +
+  labs(title = "Soma Size Per Mouse in Subset (fa==0)") +
+  xlab("Mouse ID") + ylab("Soma Size") +
+  theme_grey(base_size = 16)
+```
+
+Description of Box Plot:
+
+This figure shows the range of neuron sizes per mouse e.g., the range of sizes for mouse no. 1 span between approx. 85-115 micrometers. There seems to be a fair bit of variety between the soma size measurements in these 5 mice. The notches on these plots represent comparisons around the median values. Generally, if the observations are independent then notches can be used to preform pairwise hypothesis test for difference of medians; if the notches overlap then there is no difference of medians and if they do not overlap then there is a difference in medians. In this case, the notches do overlap, which is evidence that I should reject the null hypothesis but these observations are not independent. I will go into this in more detail in later sections. In addition, the box plots for mice 0-4 have varying widths- this is because I specified ```varwidth=TRUE``` and it indicates # of observations per mouse. Box plots that are narrow like that for mouse 3 mean that there were relatively few soma size measurements taken from mouse 3. On the other hand, the box plot for mouse 4 is wide indicating that there were comparatively more neurons measured in that mouse. 
+
+
+# Intraclass Correlation Coefficient (ICC) for Soma Size
+
+What is ICC and why am I calculating it? 
+
+The ICC is a descriptive statistic that can be used when quantitative measures are made on units organized into groups e.g., soma size measurements grouped by individual mice. The ICC describes how strongly units in the same group resemble each other and values range from 0-1, in which ICC=1 indicates high similarity between values from the same group and ICC=0.1 means that values from the same group are not similar, [statisticshowto.com.](https://www.statisticshowto.com/intraclass-correlation/) In other words, ICC is a measure of how large the subject effect is, in relation to the error term (as explained in lecture 10 material).In this analysis, I am calculating the ICC to find out how highly correlated the measurements are within each mouse. The ICC calculation (below) was taken from Lab 10: 
+
+\begin{equation*}
+\begin{aligned}
+ICC & = corr(x_{ij}, x_{ik}) \\
+    & = \frac{\sigma_{subj}^2}{\sigma_{subj}^2 + \sigma_{\epsilon}^2} \\
+    & = \frac{\tau_{00}^2}{\tau_{00}^2 + \sigma_\epsilon^2}
+\end{aligned}
+\end{equation*}
+
+
+Step 1: 
+
+I built a linear mixed-effects model to get the random effects intercept and residual standard deviation values. (Note: The subject variance = intercept value and residual variance = residual value). I selected a mixed-effects model because in this data set, it seems like the true intercept varies randomly between mice and there's a fixed coefficient for PTen treatment. 
+
+```{r}
+mix_mice <- nlme::lme(somasize ~ pten, data = mydata, random = ~1 | mouseid)
+
+summary(mix_mice)
+```
+
+```{r}
+mix_mice1 <- nlme::lme(somasize ~ pten, data = mydata, random = ~1 | mouseid)
+
+summary(mix_mice)
+```
+
+
+Step 2: Build a formula that will automatically plug the values from step 1 (7.250348 and 18.11401) into the ICC equation. 
+
+```{r}
+ICC <- function(mix_mice) {
+       cors_mice <- as.numeric(VarCorr(mix_mice))
+       cors_mice[1]/(cors_mice[1] + cors_mice[2])
+}
+ICC(mix_mice)
+```
+
+
+
+Step 3: Double check step 2 by manually calculating the ICC using the values from step 1 (7.250348 and 18.11401): 
+
+
+
+$ICC = 7.250348^2 / (7.250348^2 + 18.11401^2)$ = `r round(7.250348^2 / (7.250348^2 + 18.11401^2), 2)` 
+
+
+
+ICC Discussion: 
+
+In Moen et al. article, the ICC = 0.21. The authors used the full mice population in ICC calculation, which included 1142 observations and 14 groups. In my ICC calculation, I restricted the sample size to fa == 0 so my # observations and groups different from Moen et al. (# of observations: 396 and # groups: 5) which is why my ICC value differs from the authors. Both ICC measures are < 0.5, which suggests not strong reliability. Within my study sample of mice 0-4, ICC = 0.14 which means that on average, soma size values within the same mouse were relatively different from each other. 
+
+
+# Regression Models and Corresponding Interpretations 
+
+Objective: 
+
+For this section, my objective is to recreate the regression models and results in Moen et al. Table 4. For each of the 5 regression models: neuron-level lienar regression, marginal regression, mixed-effects regression, and mixed-effects with additional PTen variable as predictor, I will (1) state the model formula, (2) corresponding assumptions, and (3) interpret results. In the subsequent section, I'll diplay results from each of these models in one table and compare those results to Moen et al. publication. 
+
+
+
+### Neuron-Level Linear Regression
+
+
+$$somasize_{ij} = \beta_0 + \beta_1PTen_{ij}+\epsilon_{ij}$$
+
+What are the assumptions of linear regression models? 
+
+$$\epsilon_{ij} \stackrel{}{\sim} Normal(0, \sigma^2)$$
+
+Linear regression assumes that the error term is normally distributed around a mean of 0 and a constant variance of $\sigma^2$ among all observations and independence of all observations regardless of which subject they're clustered within. In my analysis, the assumption of independence is violated because the soma size measurements are clustered within each mouse. Having said that, I will fit the linear regression model. 
+
+
+Fit the neuron-level linear regression model: 
+
+```{r}
+linear_mice <- lm(somasize ~ pten, data=mydata)
+```
+
+```{r}
+summary(linear_mice)
+confint(linear_mice)
+```
+
+Interpretation of Linear Regression Model Results: 
+
+Among mice 0-4, soma sizes increased by 11.039 micrometers in neurons that received PTen treatment compared to those that did not receive treatment (p-value = < 0.0001). The p-value is less than 0.05 which indicates statistical significance between soma size and PTen treatment. 
+
+
+
+### Marginal Regression
+
+
+$$somasize_{ij} = \beta_0 + \beta_1PTen_{ij}+\epsilon_{ij}$$
+
+What are the assumptions of marginal regression? 
+
+$$E[\epsilon_{ij}] = 0$$
+$$var[\epsilon_{ij}] = \sigma^2$$
+
+The generalized estimating equations (GEE) procedure assumes $E[\epsilon_{ij}] = 0$ and typically $var[\epsilon_{ij}] = \sigma^2$. Marginal regression models make assumptions about the relationship of the expected value of the outcome to the predictors in the model and do not require the conditional distribution of the observations given the covariates to satisfy a particular distribution. My analysis/ data does not violate these assumptions. 
+
+
+Fit the marginal regression model: 
+
+```{r}
+marginal_mice <- gee::gee(somasize ~ pten,
+                      corstr = "exchangeable",
+                      id = mouseid,
+                      data = mydata)
+```
+
+```{r}
+marginal_mice
+```
+
+Interpretation of Marginal Regression Results: 
+
+PTen = 11.03859, meaning that on average, soma size increases by 11.03859 in neurons that received PTen treatment compared to those that did not receive treatment. 
+
+
+
+### Mixed-Effect Regression Model
+
+
+$$somasize_{ij} = \beta_0 + \beta_1PTen_{ij} + θ_i + \epsilon_{ij}$$
+
+
+What are the assumptions of mixed-effect models?  
+
+$$\epsilon_i \stackrel{iid}{\sim} N(0, \sigma_\epsilon^2)$$
+
+$$θ_i \stackrel{iid}{\sim} N(0, \tau_{00}^2)$$
+
+Mixed-effects models assume normally distributed residuals as in fixed effects model (with mean 0 and homeostatic variance) and normally distributed latent variable (the random variable of mouseid must be normally distributed with mean = 0 and different variance). Note: In a mixed-effect model, the "true" intercept varies randomly from mouse to mouse and the "true" (population) coefficient of treatment is fixed (same for every mouse). Next steps include fitting the mixed-effects model and testing whether the intercepts appear randomly distributed using a plot from our lecture 10 material.  
+
+
+Fit the Mixed-Effects Model: 
+
+```{r}
+mix_mice <- nlme::lme(somasize ~ pten, data = mydata, random = ~ 1 | mouseid)
+```
+
+
+Plot the random intercepts:
+
+```{r, echo=FALSE}
+par(cex = 2)
+plot(ranef(mix_mice), cex = 2)
+```
+
+This plot is somewhat difficult to read because there are only 5 points of data. There may be a pattern in the data points plotted but it could also be random. To further explore whether or not this data meets the assumptions of mix-effects model, I will plot the QQ residuals. 
+
+
+Mixed effects model diagnostics: 
+
+```{r, echo=FALSE}
+par(mfrow = c(1, 2), cex = 1.5)
+qqnorm(residuals(mix_mice, type = "pearson"), main = "QQ plot residuals")
+qqline(residuals(mix_mice, type = "pearson"))
+qqnorm(ranef(mix_mice)[, 1], main = "QQ plot random intercepts")
+qqline(ranef(mix_mice)[, 1])
+```
+
+The data seem to fit relatively well along the straight lines in both the QQ residuals and random intercept plots. Neither plot rings bells of concern. I.e., it doesn't seem like the data violates the assumption of normality. Therefore, the data seem to fit the assumptions of mixed-effects model. 
+
+
+Mixed-effects model results:
+
+```{r}
+summary(mix_mice)
+intervals(mix_mice)
+```
+
+
+Discussion of mixed-effects model results: 
+
+On average, PTen knockdown increases soma size by 11.50922 micrometers, among mice exposed to PTen (95% CI: 7.85524, 15.16321) compared to those who were not exposed to PTen. The 95% CI does not include the null value and thus indicates statistical significance. In addition, the 95% CI for sd((Intercept)): 3.43831, 15.28877 suggests that there is evidence of variability in between mice that is not adequately explained by the within mice variability. Lastly, I'll note that the correlation value for pten is -0.32 which is a relatively low and negative correlation and therefore does not show collinearity. 
+
+
+
+### Fixed-Effect Regression
+
+
+$$somasize_{ij} = \beta_0 + \beta_1mouseid_{ij} + ... + \beta_{k}mouseid_{ik} +\epsilon_{ij}$$
+
+
+What are the assumptions of fixed-effect model? 
+
+$$\epsilon_i \stackrel{iid}{\sim} N(0, \sigma_\epsilon^2)$$
+
+Fixed-effect models assume normally distributed residuals. In my analysis, this assumption is not violated. Note about fixed-effect models: Moen et al. explains that fixed-effect models differ from marginal regression models in that they include subject-specific regression coefficients. 
+
+
+Fit the fixed-effects model: 
+
+```{r}
+fixed_mice <- lm(somasize ~ pten + mouseid, data = mydata)
+```
+
+
+Fixed-effects model results: 
+
+```{r}
+summary(fixed_mice)
+confint(fixed_mice)
+```
+
+Discussion of fixed-effect model results: 
+
+According to the output, PTen knockdown increases soma size by 11.540 micrometers, on average, compared to neurons without treatment (adjusted for mouseid). The 95% CI: 7.879640, 15.200476 does not include the null value 1 which suggests that the association between PTen knockout and soma size is statistically significant. 
+
+
+### Mixed-Effect Regression with Prop as Additional Predictor
+ 
+
+$$somasize_{ij} = \beta_0 + \beta_1PTen_{i} + \beta_2Pten_{ij} + θ_i + \epsilon_{ij}$$
+
+
+What are the assumptions of this model? 
+
+$$\epsilon_i \stackrel{iid}{\sim} N(0, \sigma_\epsilon^2)$$
+
+$$θ_i \stackrel{iid}{\sim} N(0, \tau_{00}^2)$$
+
+This model is the same as the mixed-effects model with the addition of a new predictor variable: the proportion of PTen knockdown neurons (prop). The data meets the mixed-effects model assumptions, which are restated from above. 
+
+
+Fit the Mixed-Effects Model with PTen as Additional Predictor: 
+
+```{r}
+mix_and_prop <- nlme::lme(somasize ~ pten + prop, data = mydata, random = ~ 1 | mouseid)
+```
+
+
+Mixed-effects model results:
+
+```{r}
+summary(mix_and_prop)
+intervals(mix_and_prop)
+```
+
+
+Discussion of mixed-effects model results: 
+
+On average, soma sizes in mice exposed to PTen knockdown were 11.54 more than the soma sizes measured in mice not exposed to PTen (95% CI: 7.879727, 15.200388). The 95% CI does not include the null value and suggests a statistically significant association between PTen knockdown and soma sizes. Compared to the other mixed-effects model, this model accounts for more of the effect of clustering. 
+
+
+# Reproducing Moen et al. Table 4 
+
+
+![TABLE 1. Results of Regression Analyses](myregresults.png)
+
+
+![TABLE 4. Moen et al. Results of Regression Analyses in Publication](moen.png)
+
+
+# Conclusion 
+
+For the most part, my regression results match the results in Moen et al. Table 4. There are notable differences in the standard error values in my analysis vs. the authors and there are slight differences in the 95% CI. These differences are likely due to a combination of user error on my part and using different statistical analysis tools (R vs. STATA). One limitation in my analyses and in the Moen et al. publication is that we treat observations as independent but they are not independent because each mouse has it's own preconditioned circumstances. In terms of challenges , I had a difficult time trying to re create Moen. et al. Table 4. As you can see, I ended up creating a table in Excel and including it as a PNG (in the previous section (above). I tried a few variations of code to create that table in R but kept hitting walls. Due to a time crunch, I ended up using the PNG table (which was not ideal). Below, I have added an appendix of code that I was messing with to create my "table 4". This code was taken from various BIOS II Slack threads.
+
+
+### Appendix 
+
+**My trials and errors while recreating Moen et al. Table 4** 
+
+library(tidyr)
+library(broom.mixed)
+library(kableExtra)
+
+tidyfit1 <- tidy(linear_mice,conf.int = TRUE,conf.level = 0.95) %>%
+  filter(term == "ptenfactorPten shRNA")%>%
+  select(estimate, std.error, p.value, conf.low, conf.high)
+
+tidyfit2 <- tidy(marginal_mice,conf.int = TRUE,conf.level = 0.95) %>%
+  filter(term == "ptenfactorPten shRNA")%>%
+  select(estimate, std.error, p.value, conf.low, conf.high)
+
+tidyfit3 <- tidy(fixed_mice,conf.int = TRUE,conf.level = 0.95) %>%
+  filter(term == "ptenfactorPten shRNA")%>%
+  select(estimate, std.error, p.value, conf.low, conf.high)
+
+tidyfit4 <- tidy(mix_mice,conf.int = TRUE,conf.level = 0.95) %>%
+  filter(term == "ptenfactorPten shRNA")%>%
+  select(estimate, std.error, p.value, conf.low, conf.high)
+
+tidyfit5 <- tidy(mix_and_prop,conf.int = TRUE,conf.level = 0.95) %>%
+  filter(term == "ptenfactorPten shRNA")%>%
+  select(estimate, std.error, p.value, conf.low, conf.high)
+
+regtab <- rbind(tidyfit1, tidyfit3, tidyfit5)
+
+
+rownames <- (regtab c("Neuron level linear regression", "Mixed-effect regression", "Mixed-effect regression with mean(Pten) as additional predictor")) %>% 
+  
+kbl(caption = "TABLE 1. Results of Regression Analyses", col.names = c("Estimate", "Std. Error", "P-value", "95% CI: low", "95% CI: high")) %>% 
+  
+kable_styling()
+
+  
+  regtab c("Neuron level linear regression" "Marginal regression" "Mixed-effect regression" "Fixed-effect regression" "Mixed-effect regression with mean(Pten) as additional predictor")) %>%
+  
+  
+kbl(caption = "TABLE 1. Results of regression analyses", col.names = c("Estimate", "Std. Error", "P-value", "95% CI: low", "95% CI: high")) %>%
+  kable_styling()
+
+tab_model(linear_mice, marginal_mice, mix_mice, mix_and_prop)
