@@ -1,0 +1,418 @@
+---
+title: "BIOS II, Assignment 2"
+subtitle: "*Exploring the Association Between Nocturnal Panic Attacks & Suicidal Ideation*"
+author: "*Madelyn Carlson*"
+date: "10/24/2021"
+output: 
+  html_document:
+  toc: yes
+  toc_depth: 2
+  fig_caption: yes
+  number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include = FALSE}
+library(ggplot2)
+library(haven)
+library(tidyverse)
+library(table1)
+library(dplyr)
+library(ggraph)
+library(ggdendro)
+library(MASS)
+library(pscl)
+library(dendextend)
+library(pheatmap)
+library(RColorBrewer)
+library(tidyr)
+library(gtsummary)
+
+rawdata <- read_sav("NPs_DeidentifiedData 3-1.sav")
+```
+
+# Introduction
+
+For this assignment, we analyzed a published dataset from Smith et al., described below, and explored the association between nocturnal panic attacks and suicide ideation among a sample of American adults, over the age 18 (n = 327). After assessing the predictor variables (nocturnal panic attacks, biological sex, age, and education) for multicollinearity, four log-linear models were then fit to the outcome variable (suicide ideation): Poisson, Negative Binomial, Zero-inflated Poisson, and Zero-inflated Negative Binomial. From this, I determined the best fit from these log-linear models and use it to interpret the coefficients. 
+
+
+Having explored the data, I hypothesize that the data will best fit a negative binomial distribution because the outcome variable (SITBI5) is over-dispersed and because there is a large number of zeros represented in the outcome variable. 
+
+
+### The Dataset
+
+
+**Paper PDF**: [Nocturnal Panic Attacks](https://www.sciencedirect.com/science/article/abs/pii/S0165178120316747?via%3Dihub)
+
+**Dataset**: [NPs DeidentifiedData 3-1.sav](https://data.mendeley.com/datasets/9p4vv275hk/1)
+
+
+The dataset used accompanies this publication:
+Nicole S. Smith, Rachel L. Martin, Brian W. Bauer, Shelby L. Bandel, Daniel W. Capron, The association between nocturnal panic attacks and suicidal ideation, plans, and attempts. Psychiatry Research, Volume 291,2020,113280,ISSN 0165-1781, [https://doi.org/10.1016/j.psychres.2020.113280](https://www.sciencedirect.com/science/article/abs/pii/S0165178120316747?via%3Dihub).
+
+
+The data used for this assignment was collected through Amazon's Mechanical Turk (MTurk) system for a research study about anxiety, sleep disturbances, and suicide. The lead researchers for this study, Nicole Smith et al., included participants who were at least 18-years-old and living in the U.S.. Variables in the dataset consist of demographics, nocturnal panic history, daytime panic history, the SITBI Short Form, and content validation questions. This data was de-idenified for analyses discussed in the paper cited above, "The  Association Between Nocturnal Panic Attacks and Suicidal Ideation, Plans, and Attempts" (Smith et al., 2020). In this paper, Smith et al. sought to examine how nocturnal panic attacks relate to suicide ideation, plans, and attempts separately. The researchers predicted that nocturnal panic would be associated with more suicidal ideation, plan, and attempts than individuals who'd experienced daytime panic attacks or no panic attacks. From their analyses, Smith et al. confirmed that norturnal panic attacks may be a catalyst for the progression from suicide ideation to attempts (Smith et al., 2020). 
+
+
+
+**Study Variables**
+
+This assignment focuses on 5 of the `r ncol(rawdata)` total variables in the dataset. These variables include suicide ideation (outcome), nocturnal panic attacks (exposure), and 3 other predictors: gender, age group, and education.
+
+
+(A) *Episodes of Suicide Ideation* — Episodes of suicide ideation in the past year is the outcome variable in this analysis and is coded as SITBI5 in the original dataset. Two other suicide-related variables were explored in EPI Table 1: episodes of suicide planning and episodes of attempted suicide in the past year but our analyses used only episodes of suicide ideation (SITBI5) as the outcome variable. 
+
+
+
+(B) *Nocturnal Panic Attacks* — Nocturnal panic attacks are one of the four predictor variables in this analysis and it is coded as NPS1 in the dataset. Smith et al. describes nocturnal panic attacks as panic attacks that occur during a sleeping state. Individuals who experience nocturnal panic attacks are awakened from sleep in the midst of a panic attack. As such, they represent the intersection of two established risk factors for suicide: panic and sleep disturbances (Smith et al., 2020).
+
+
+
+(C) *Biological Sex* — Biological sex is one of the predictor variables in this analysis. Note: this variable does not necessarily reflect the gender of the individuals in this data set. Having said that, individuals who identified as "female" are slightly more represented in this dataset than men (39.4% vs. 30%). 
+
+
+
+(D) *Age Group* — Age group is one of the predictor variables. In this dataset, participants' ages were broken down into 5 age groups: 19-29, 30-39, 40-49, and 50+ years old. A majority of those participants were under 40-years-old. No participants were under the age 19; study participant eligibility included only participants 18-years-old and older. 
+
+
+
+(E) *Education* — Education is the last of the four predictor variables in this analysis. Education levels were broken down into 3 groups: high school graduates, individuals with some college experience, and those who had graduated college or above.  
+
+
+
+
+
+### Importing the Dataset
+```{r import data}
+rawdata <- read_sav("NPs_DeidentifiedData 3-1.sav")
+```
+
+
+**Cleaning Data & Recoding Variables**
+```{r clean and label data}
+cleandat <- rawdata %>% mutate(
+  agegroup = factor(case_when(
+    Age >= 19 & Age <= 29 ~ "19-29",
+    Age >= 30 & Age <= 39 ~ "30-39",
+    Age >= 40 & Age <= 49 ~ "40-49",
+    Age >= 50 ~ "50+"
+  ))
+) %>%
+  mutate(
+    education1 = recode_factor(
+      EducationCollapsed,
+      "1" = "High school graduate",
+      "2" = "Some college",
+      "3" = "College graduate or above"
+    )
+  ) %>%
+  mutate(gender = recode_factor(Sex,
+                                "0" = "Male",
+                                "1" = "Female")) %>%
+  mutate(NPS1 = recode_factor(NPS1,
+         "0" = "No nocturnal panic attacks", 
+         "1" = "Nocturnal panic attacks"))
+```
+
+
+
+Next, we examine the mean and variance of outcome variable, SITBI5.
+```{r}
+meanvarzeros <- rawdata %>% 
+  filter(complete.cases(SITBI5)) %>%
+summarise(
+  mean = mean(SITBI5),
+  var = var(SITBI5),
+  fraczero = (sum(SITBI5 == 0) / length(SITBI5))
+)
+meanvarzeros
+```
+As we can see, the variance of SITBI5 > mean (591.39 > 4.76), which indicates over-dispersion. Over-dispersion means that the data may not fit well with a Poisson model. We will explore this more after setting up the EPI Table 1. 
+
+
+### EPI Table 1
+
+
+Label variables that will be shown in EPI Table 1.  
+```{r}
+cleandat <- within(cleandat, {
+  label(gender) <- "Biological sex"
+  label(agegroup) <- "Age group (years)"
+  label(education1)   <- "Education"
+  label(SITBI5) <- "Episodes of suicide ideation in past year"
+  label(SITBI18) <- "Episodes of suicide planning in past year"
+  label(SITBI41) <- "Episodes of attempted suicide in past year"
+})
+```
+
+
+Set up Table 1 
+```{r}
+table1 <- table1::table1(~ agegroup + gender + education1 + SITBI5 + SITBI18 + SITBI41 | NPS1, 
+               data = cleandat, topclass="Rtable1-zebra", 
+               rowlabelhead ="Charateristics", 
+               caption = "Table 1: Charateristics of the Association Between Nocturnal Panic Attacks & Suicidal Ideation, Plans, and Attempts")
+```
+
+
+Print Table 1. 
+```{r}
+table1
+```
+
+
+
+*Description of EPI Table*
+
+
+*Table 1. Characteristics of the sample stratified by exposure variable: nocturnal panic attacks (yes/no).*
+
+
+From this table, we can see that there are a total of 327 participants in the study. Among those participants, a majority of them are below the age 50 and the largest proportion of them are between ages 30-49. Although the age group 30-49 is the largest group in both the overall sample and in the "no nocturnal panic attacks" group, it is not the largest among those who reported experiencing nocturnal panic attack(s). Rather, the age group for 19-29 years old represented the largest proportion of participants who experienced nocturnal panic attacks. Additionally, slightly more women were represented in the sample than men and more of them reported nocturnal panic attacks (36.6%) compared to men (27.3%). Participants who reported an education level of college degree of higher represented 48.3% of the sample; a slightly larger proportion of college grads experienced nocturnal panic attacks (43.5%) compared to other education levels. A larger proportion of participanted who experienced nocturnal panic attacks reported episodes of suicidal ideation, plans, and attempts (which are three separate variables) in the past year, compared to the group who did not experience nocturnal panic attacks. 
+
+
+# Methods 
+
+In this section, we will create a histogram to better understand the distribution of the outcome variable; assess for multicollinearity to determine whether any predictor variables need to be removed; and lastly, we will fit the data to four log-linear models. 
+
+
+### Histogram
+
+
+First, plot the counts of suicidal ideation among the entire sample. 
+```{r}
+ideation_entire_sample <- ggplot(cleandat, aes(x = SITBI5)) + geom_histogram(binwidth = 7) + 
+  labs(
+    x = "Episodes of Suicide Ideation in the Past Year",
+    y = "Total Participants", 
+    caption = "Data Source: Amazon Mechanical Turk System, 2020"
+  )
+
+ideation_entire_sample + theme_minimal()
+```
+
+
+*Description of Histogram*
+
+
+This histogram displays episodes of suicide ideation in past year within the total sample. The figure is heavily skewed to the left, indicating that the fraction of participants who never experienced an episode of suicide ideation (n = 0) is much higher than the fraction of participants who reported at least 1 episode of suicide ideation within the past year. 
+
+
+
+Running the ```table()``` command, we can confirm that there is a very large count of zeros in this dataset (n = 139), relative to other values.  
+
+```{r}
+table(cleandat$SITBI5)[1:15]
+```
+
+
+Next, to prepare the data for the following section, we will remove all missing values by running complete cases. 
+
+```{r}
+comp_cases <- complete.cases(cleandat[, c("agegroup", "gender", "education1", "SITBI5", "NPS1")])
+
+noNA_cleandat <- cleandat[comp_cases, ]
+```
+
+
+
+### Assess for Multicollinearity
+
+
+Multicollinearity is a phenomenon in which a predictor variable(s) is highly correlated with other variable(s). Assessing multicollinearity will allow us to understand whether these relationships exist within our predictor variables and remove them, if so.
+
+
+
+**Part 1: Cluster Dendrogram**
+
+Code Souce: Tal Galili, [Dendrogram Frequently Asked Questions](https://cran.r-project.org/web/packages/dendextend/vignettes/FAQ.html).
+```{r}
+mm <- model.matrix(~ agegroup + gender + education1 + NPS1, data = noNA_cleandat)
+hc <- hclust(as.dist(1-cor(mm[, -1])))
+dend <- as.dendrogram(hc)
+par(mfrow = c(1,2), mar = c(5,2,1,0))
+ dend <- dend %>%
+          color_branches(k = 3) %>%
+          set("branches_lwd", c(2,1,2)) %>%
+          set("branches_lty", c(1,2,1))
+ dend <- color_labels(dend, k = 3)
+ labels(dend) <- c("Nocturnal Panic Attacks", "40-49 Years Old", "Some College", "30-49 Years Old", "Females", "50+ Years Old", "College Grad+")
+ 
+ plot(dend)
+```
+```{r}
+cor(mm[, -1])
+```
+
+*Discussion of Dendrogram*
+
+From this figure and absolute correlation values, we see that among these variables, gender and age groups are correlated to one another. However, no two covariates correlations exceeded the cut-off of r=.80 (Pallant, 2016) and so, the multicollinearity assumption was not violated. 
+
+
+
+**Part 2: Heatmap**
+
+
+```{r}
+corrplot::corrplot(cor(mm[, -1]))
+```
+
+
+*Discussion of Heatmap*
+
+In the heatmap above, highly correlated variables can be identified by big, dark blue (1) dots or big, dark red dots (-1). Of the predictor variables, the relationship most correlated is "some college" with "college graduate or above." Because this correlation is occuring between two dummy levels of the same variables, we do not need to remove any predictor variables. Therefore, none of the relationships between predictor variables above are highly correlated so we will keep all four predictors in future analyses. In other words, there is no strong multicollinearity in this subset of the dataset. 
+
+
+### Fit Log-Linear Models: Poisson, NB, and Intercept-only ZI Poisson and NB Models
+
+We will now fit the outcome variable to four log-linear models: Poisson, NB, and Intercept-only ZI Poisson and NB Models. Once this is done, we can calculate the log-likelihood from each model and select the best fitting model. 
+
+
+*Poisson model*
+```{r}
+fit.pois <- glm(SITBI5 ~ agegroup + gender + education1 + NPS1, 
+            data = noNA_cleandat,
+            family = poisson(link = "log"))
+```
+
+```{r}
+summary(fit.pois)
+```
+
+
+*Negative Binomial*
+```{r}
+fit.negbin <- glm.nb(SITBI5 ~ agegroup + gender + education1 + NPS1, 
+            data = noNA_cleandat)
+```
+
+```{r}
+summary(fit.negbin)
+```
+
+
+*Intercept-only Zero-inflated Poisson model*
+```{r}
+fit.ZIpois <- zeroinfl(SITBI5 ~ agegroup + gender + education1 + NPS1 | 1, 
+              data = noNA_cleandat,
+              dist = "poisson")
+```
+
+```{r}
+summary(fit.ZIpois)
+```
+
+
+*Intercept-only Zero-inflated Negative Binomial model*
+```{r}
+fit.ZInegbin <- zeroinfl(SITBI5 ~ agegroup + gender + education1 + NPS1 | 1, 
+              data = noNA_cleandat,
+                dist = "negbin")
+```
+
+```{r}
+summary(fit.ZInegbin)
+```
+
+
+To determine the best fitting model, we use chi-square nested deviance tests. The log-likelihood from each model will be calculated and compared. 
+
+```{r}
+listofmodels <- list(
+  poisson = fit.pois,
+  negbin = fit.negbin,
+  ZIpois = fit.ZIpois,
+  ZInegbin = fit.ZInegbin
+)
+```
+
+```{r}
+lapply(listofmodels, logLik)
+```
+
+
+```{r}
+qchisq(p=0.95, df = 1)  
+qchisq(p=0.95, df = 2)  
+```
+
+
+*Interpretation of Results*
+
+
+The chi-square critical values were calculated at both 1 degrees of freedom and 2 degrees of freedom (DF). For 1 DF, the critical value is 3.84 and for 2 DFs, the critical value is 5.99. All the differences in the double log-likelihoods calculated are much larger than these critical values, with an exception for the negative binomial model and intercept-only zero-inflated negative binomial model. As is evident in the values above, the negative binomial model resulted in the smallest log-likelihood magnitude of -293.3571 with the largest number of degrees of freedom (10). Although the NB model and the intercept-only zero-inflated negative binomial model have the same log-likelihood magnitude, the negative binomial model is a better fit because it has more degrees of freedom. Having one additional DF means that the NB model took on one additional parameter and yet still had the same log-likelihood as the intercept-only ZI NB model. Therefore, the NB model is the best fit for our data and was chosen for regression analysis. 
+
+
+Next, we plotted residual deviance plots for each of the four models. 
+
+```{r}
+plotpanel1 <- function(fit, ...) {
+  plot(
+    x = predict(fit),
+    y = residuals(fit, type = "pearson"),
+    xlab = "Predicted Values",
+    ylab = "Pearson Residuals",
+    ...
+  )
+  abline(h = 0, lty = 3)
+  lines(lowess(x = predict(fit), y = resid(fit, type = "pearson")),
+        col = "red")
+}
+plotpanel2 <- function(fit, ...) {
+  resids <- scale(residuals(fit, type = "pearson"))
+  qqnorm(resids, ylab = "Std Pearson resid.", ...)
+  qqline(resids)
+}
+```
+
+
+```{r}
+par(mfrow=c(1, 2))
+for (i in seq_along(listofmodels)){
+  plotpanel1(listofmodels[[i]], main = names(listofmodels)[i])
+  plotpanel2(listofmodels[[i]], main = names(listofmodels)[i])
+}
+```
+
+From these residual plots, we confirm that the NB model is the best fit for our data, compared to the other three models. 
+
+
+# Results 
+
+
+To display the results of our regression using the NB model, I used ```tbl_regression()```which I learned about from Group 4 in their presentation of Assignment 2. I liked the format and style of their table output and so I incorporated it into my assignment. 
+
+
+```{r warning=FALSE}
+tbl_regression(fit.negbin, exponentiate = TRUE)
+```
+
+
+
+
+*Discussion of Regression Results* 
+
+From this output, we see a positive association between nocturnal panic attacks and suicide ideation. Individuals who reported nocturnal panic attacks had 2.8 times the rate of suicide ideation compared to those without nocturnal panic attacks and the corresponding p-value (0.029) is statistically significant at p-value < 005. Two other statistically significant associations are present: among females and individuals belonging to the 50+ age group. Females were less likely to experience episodes of suicide ideation, compared to men (p-value: 0.01) and people over the age of 50 were also less likely to experience episodes of suicide ideation compared to younger age groups (p-value: 0.03). 
+
+
+# Conclusion
+
+
+
+These findings were consistent with the hypothesis that the data will best fit a negative binomial distribution. NB model was chosen for regression analysis over the other three options because it resulted in the smallest log-likelihood magnitude (-293.3571) and with the largest number of degrees of freedom (10). After analyzing the output from this regression model, we saw that individuals with nocturnal panic attacks had 2.8 times the rate of suicide ideation compared to those without nocturnal panic attacks (p-value: 0.029); females were less likely to experience episodes of suicide ideation, compared to men (p-value: 0.01); and people over the age of 50 were also less likely to experience episodes of suicide ideation compared to younger age groups (p-value: 0.03). 
+
+
+
+*Challenges:* 
+
+I experienced two key challenges while working through this assignment: running complete cases and reproducing the ```pheatmap``` code from lab 5. In terms of complete cases, I used several sets of code and kept getting error messages or an empty dataset in return. Through trial and error, I finally figured out how to properly run it. For ```pheatmap``` I was unable to figure out why I got error messages. When I ran ```pheatmap(mm, clustering_distance_cols = "correlation", clustering_distance_rows = "euclidean")``` the code worked fine but when I changed it to: ```pheatmap(mm, clustering_distance_cols = "correlation", clustering_distance_rows = "correlation")``` it returned the warning "NA/NaN/Inf in foreign function call (arg 10)" which I think I've seen enough times now that the phrase it stuck in my head. I problem solved by researching other heatmap options and opted for the one that is now in my code. 
+
+
+
+*These Results Compared to the Original Publication:* 
+
+Our results are mostly consistent with the findings from the original publication in that both analyses confirmed that nocturnal panic attacks are positively associated with episodes of suicide ideation. In the original publication, the researchers concluded that nocturnal panic attacks may be a catalyst for the progression from suicide ideation to attempts. Smith et al. had a wider scope in their analyses and explored the relationships between multiple types of panic attacks (include not having panic attacks) and suicide ideation, plans, and attempts. Our analyses on the other hand were more simplified in that we selected one panic attack type (nocturnal panic attacks) and one suicide-related outcome: ideation. Additionally, whereas Smith et al. used a combination of chi-square analyses, one-way ANCOVAs, Levene's test, and the Kruskal-Wallis test, we fit the dataset to a negative binomial model. We lumped paricipants' ages into groups rather than treating it as a numeric variable which may explain why we found a slight protective effect among people 50+ for suicide ideation whereas that is not discussed in the original publication. 
+
